@@ -10,10 +10,11 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 
 # --- Environment Variables ---
-# Load environment variables from .env file for local development
 load_dotenv()
-# OnRender will set this environment variable automatically
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
+
+# --- Constants ---
+DATA_GOV_UA_API_URL = "https://data.gov.ua/api/3/action/package_search"
 
 # --- App Initialization ---
 app = FastAPI(
@@ -25,7 +26,7 @@ app = FastAPI(
 # --- CORS Configuration ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all for simplicity, can be restricted later
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -40,57 +41,78 @@ class QueryResponse(BaseModel):
     source_url: str | None = None
     visualization: dict | None = None
 
-# --- AI Keyword Extraction Logic ---
+# --- AI & Data Functions ---
 def get_keywords_from_question(question: str) -> str:
-    """
-    Uses Mistral AI to extract relevant search keywords from a user's question.
-    """
+    """Uses Mistral AI to extract search keywords from a user's question."""
     if not MISTRAL_API_KEY:
-        return "Error: MISTRAL_API_KEY is not configured on the server."
-
+        return "Error: MISTRAL_API_KEY is not configured."
     try:
         llm = ChatMistralAI(model="mistral-large-latest", api_key=MISTRAL_API_KEY)
         prompt = ChatPromptTemplate.from_messages([
-            ("system", "You are an expert at extracting Ukrainian search keywords from a user question. Your goal is to pull out the most important terms that would be used to search a government open data portal. Respond with only the keywords, in Ukrainian, separated by spaces. Do not use any other words or punctuation."),
+            ("system", "You are an expert at extracting Ukrainian search keywords from a user question. Your goal is to pull out the most important terms for searching a government data portal. Respond with only the keywords, in Ukrainian, separated by spaces."),
             ("user", "{question}")
         ])
         output_parser = StrOutputParser()
         chain = prompt | llm | output_parser
-        keywords = chain.invoke({"question": question})
-        return keywords
+        return chain.invoke({"question": question})
     except Exception as e:
-        print(f"Error during keyword extraction: {e}")
-        return f"Error: Could not connect to AI model. Please check the API key and model configuration."
+        print(f"Error in get_keywords_from_question: {e}")
+        return "Error: Could not connect to AI model."
+
+def search_data_gov_ua(keywords: str) -> dict:
+    """Searches data.gov.ua for datasets matching the keywords."""
+    if keywords.startswith("Error"):
+        return {"error": keywords}
+    try:
+        params = {'q': keywords, 'rows': 5} # Ask for 5 results
+        response = requests.get(DATA_GOV_UA_API_URL, params=params)
+        response.raise_for_status()  # Raise an exception for bad status codes
+        data = response.json()
+        if data.get("result", {}).get("results"):
+            return data["result"]["results"]
+        else:
+            return {"error": "No datasets found for these keywords."}
+    except requests.exceptions.RequestException as e:
+        print(f"Error in search_data_gov_ua: {e}")
+        return {"error": f"Failed to connect to data.gov.ua API: {e}"}
 
 # --- API Endpoints ---
 @app.get("/", tags=["Status"])
 async def read_root():
-    """A simple endpoint to check if the API is running."""
     return {"status": "ok", "message": "Welcome to the CivicData AI API!"}
 
 @app.post("/api/query", tags=["AI Agent"], response_model=QueryResponse)
 async def handle_query(request: QueryRequest):
-    """
-    The main endpoint for the AI agent.
-    It takes a user's question, finds relevant data, analyzes it, and returns an answer.
-    """
+    """The main endpoint for the AI agent."""
     print(f"Received question: {request.question}")
 
-    # 1. Extract keywords from the question using Mistral AI.
+    # Step 1: Extract keywords from the question.
     keywords = get_keywords_from_question(request.question)
     print(f"Extracted keywords: {keywords}")
 
-    # 2. TODO: Search data.gov.ua using the keywords.
-    # 3. TODO: Select the best dataset.
-    # 4. TODO: Download and analyze the data with Pandas.
-    # 5. TODO: Generate a natural language answer with Mistral AI.
+    # Step 2: Search data.gov.ua using the keywords.
+    search_results = search_data_gov_ua(keywords)
+    print(f"Search results: {search_results}")
 
-    # For now, we return the extracted keywords to test this step.
-    return QueryResponse(
-        answer=f"Extracted keywords: {keywords}",
-        source_url=None,
-        visualization=None
-    )
+    # TODO: Step 3: Select the best dataset from the results.
+    # TODO: Step 4: Download and analyze the data.
+    # TODO: Step 5: Generate a natural language answer.
+
+    # For now, return the name of the first found dataset to test this step.
+    if "error" in search_results:
+        answer = search_results["error"]
+        source_url = None
+    elif not search_results:
+         answer = f"I couldn't find any datasets for the keywords: '{keywords}'"
+         source_url = None
+    else:
+        first_dataset = search_results[0]
+        dataset_title = first_dataset.get('title', 'No title found')
+        dataset_id = first_dataset.get('id')
+        answer = f"I searched for '{keywords}' and found this dataset: '{dataset_title}'."
+        source_url = f"https://data.gov.ua/dataset/{dataset_id}" if dataset_id else None
+
+    return QueryResponse(answer=answer, source_url=source_url)
 
 # --- Server Entrypoint ---
 if __name__ == "__main__":

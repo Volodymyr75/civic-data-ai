@@ -1,14 +1,14 @@
 import os
+import re
 import requests
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 import uvicorn
 from dotenv import load_dotenv
-from langchain_mistralai import ChatMistralAI
-from langchain_core.prompts import ChatPromptTemplate
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.output_parsers import StrOutputParser
-import re
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_mistralai import ChatMistralAI
+from pydantic import BaseModel
 
 # --- Environment Variables ---
 load_dotenv()
@@ -21,7 +21,7 @@ DATA_GOV_UA_API_URL = "https://data.gov.ua/api/3/action/package_search"
 app = FastAPI(
     title="CivicData AI API",
     description="API for the AI agent that interacts with data.gov.ua.",
-    version="0.1.0"
+    version="0.1.0",
 )
 
 # --- CORS Configuration ---
@@ -44,13 +44,12 @@ class QueryResponse(BaseModel):
 
 # --- AI & Data Functions ---
 def get_keywords_from_question(question: str) -> str:
-    """Uses Mistral AI to extract search keywords from a user's question."""
     if not MISTRAL_API_KEY: return "Error: MISTRAL_API_KEY is not configured."
     try:
         llm = ChatMistralAI(model="mistral-large-latest", api_key=MISTRAL_API_KEY)
         prompt = ChatPromptTemplate.from_messages([
-            ("system", "You are an expert at extracting Ukrainian search keywords from a user question. Your goal is to pull out the most important terms for searching a government data portal. Respond with only the keywords, in Ukrainian, separated by spaces."),
-            ("user", "{question}")
+            ("system", "You are an expert at extracting Ukrainian search keywords... Respond with only the keywords, in Ukrainian, separated by spaces."),
+            ("user", "{question}"),
         ])
         chain = prompt | llm | StrOutputParser()
         return chain.invoke({"question": question})
@@ -58,47 +57,51 @@ def get_keywords_from_question(question: str) -> str:
         print(f"Error in get_keywords_from_question: {e}")
         return "Error: Could not connect to AI model for keyword extraction."
 
-def search_data_gov_ua(keywords: str) -> list:
-    """Searches data.gov.ua and returns a list of dataset results or an error string."""
+def search_data_gov_ua(keywords: str) -> list | str:
     if keywords.startswith("Error"): return keywords
     try:
-        params = {'q': keywords, 'rows': 5}
-        response = requests.get(DATA_GOV_UA_API_URL, params=params)
+        response = requests.get(DATA_GOV_UA_API_URL, params={'q': keywords, 'rows': 5})
         response.raise_for_status()
-        data = response.json()
-        return data.get("result", {}).get("results", [])
+        return response.json().get("result", {}).get("results", [])
     except requests.exceptions.RequestException as e:
         print(f"Error in search_data_gov_ua: {e}")
         return f"Error: Failed to connect to data.gov.ua API: {e}"
 
 def choose_best_dataset(question: str, search_results: list) -> dict | None:
-    """Uses Mistral AI to choose the most relevant dataset from a list."""
     if not search_results: return None
-
     prompt_text = f"The user asked: '{question}'.\nI have found these datasets:\n"
     for i, dataset in enumerate(search_results):
-        title = dataset.get('title', 'No title')
-        notes = dataset.get('notes', 'No description available.')
-        prompt_text += f"\n{i+1}. Title: {title}\n   Description: {notes[:200]}...\n" # Truncate description
-
-    prompt_text += "\nWhich dataset is the most relevant to the user's question? Please respond with only the number of the best dataset."
-
+        prompt_text += f"\n{i+1}. Title: {dataset.get('title', 'No title')}\n   Description: {dataset.get('notes', 'No description')[:200]}...\n"
+    prompt_text += "\nWhich dataset is most relevant? Respond with only the number."
     try:
         llm = ChatMistralAI(model="mistral-large-latest", api_key=MISTRAL_API_KEY)
-        prompt = ChatPromptTemplate.from_messages([("user", "{prompt}")])
-        chain = prompt | llm | StrOutputParser()
+        chain = ChatPromptTemplate.from_messages([("user", "{prompt}")]) | llm | StrOutputParser()
         response = chain.invoke({"prompt": prompt_text})
-
-        # Extract the first number from the response
         match = re.search(r'\d+', response)
         if match:
             choice_index = int(match.group(0)) - 1
             if 0 <= choice_index < len(search_results):
                 return search_results[choice_index]
-        return search_results[0] # Default to first result if parsing fails
+        return search_results[0]
     except Exception as e:
         print(f"Error in choose_best_dataset: {e}")
-        return search_results[0] # Default to first result on error
+        return search_results[0]
+
+def find_data_file_url(dataset: dict) -> str | None:
+    """Finds the best data file (CSV) from a dataset's resources."""
+    if not dataset or 'resources' not in dataset:
+        return None
+    
+    # Prefer CSV files as they are easiest to analyze
+    for resource in dataset['resources']:
+        if resource.get('format', '').lower() == 'csv':
+            return resource.get('url')
+            
+    # Fallback to the first resource if no CSV is found
+    if dataset['resources']:
+        return dataset['resources'][0].get('url')
+        
+    return None
 
 # --- API Endpoints ---
 @app.get("/", tags=["Status"])
@@ -106,31 +109,32 @@ async def read_root(): return {"status": "ok"}
 
 @app.post("/api/query", tags=["AI Agent"], response_model=QueryResponse)
 async def handle_query(request: QueryRequest):
-    """The main endpoint for the AI agent."""
     print(f"Received question: {request.question}")
-
     keywords = get_keywords_from_question(request.question)
     print(f"Extracted keywords: {keywords}")
-
     search_results = search_data_gov_ua(keywords)
-    if isinstance(search_results, str): # Check if an error string was returned
+    if isinstance(search_results, str):
         return QueryResponse(answer=search_results)
-
     if not search_results:
-        return QueryResponse(answer=f"I couldn't find any datasets for the keywords: '{keywords}'")
+        return QueryResponse(answer=f"I couldn't find any datasets for: '{keywords}'")
 
-    # NEW: The reasoning step
     chosen_dataset = choose_best_dataset(request.question, search_results)
-    print(f"Chosen dataset: {chosen_dataset.get('title') if chosen_dataset else 'None'}")
-
     if not chosen_dataset:
-         answer = f"I found some datasets for '{keywords}', but couldn't determine the best one."
-         source_url = None
+        return QueryResponse(answer=f"I found datasets for '{keywords}', but couldn't choose the best one.")
+    
+    dataset_title = chosen_dataset.get('title', 'No title')
+    print(f"Chosen dataset: {dataset_title}")
+
+    # NEW: Find the actual data file URL
+    data_file_url = find_data_file_url(chosen_dataset)
+    print(f"Found data file URL: {data_file_url}")
+
+    if not data_file_url:
+        answer = f"I found the dataset '{dataset_title}', but couldn't find a downloadable data file inside it."
+        source_url = f"https://data.gov.ua/dataset/{chosen_dataset.get('id')}"
     else:
-        dataset_title = chosen_dataset.get('title', 'No title found')
-        dataset_id = chosen_dataset.get('id')
-        answer = f"Based on your question, the most relevant dataset I found is: '{dataset_title}'."
-        source_url = f"https://data.gov.ua/dataset/{dataset_id}" if dataset_id else None
+        answer = f"I believe the best dataset is '{dataset_title}'. I've found a data file and will analyze it next."
+        source_url = data_file_url # Return the direct file URL
 
     return QueryResponse(answer=answer, source_url=source_url)
 

@@ -48,7 +48,7 @@ def get_keywords_from_question(question: str) -> str:
     try:
         llm = ChatMistralAI(model="mistral-large-latest", api_key=MISTRAL_API_KEY)
         prompt = ChatPromptTemplate.from_messages([
-            ("system", "You are an expert at extracting Ukrainian search keywords... Respond with only the keywords, in Ukrainian, separated by spaces."),
+            ("system", "You are an expert at extracting the 2-4 most essential Ukrainian search keywords from a user's question. Your goal is to pull out only the core terms needed to search a government data portal. Do not add extra words. Respond with only the keywords, in Ukrainian, separated by spaces. For example, if the user asks 'Скільки шкіл у місті Львів?', you should respond 'школи Львів'."),
             ("user", "{question}"),
         ])
         chain = prompt | llm | StrOutputParser()

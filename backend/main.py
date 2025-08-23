@@ -164,7 +164,7 @@ async def handle_query(request: QueryRequest):
 # --- Server Entrypoint ---
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)d to analyze the data. The file might not be a valid CSV or there was another issue. {e}"
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
 
 
 # --- API Endpoints ---

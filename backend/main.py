@@ -5,8 +5,9 @@ import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import ChatPromptTemplate
+import pandas as pd
+from io import StringIO
+from langchain_experimental.agents import create_pandas_dataframe_agent
 from langchain_mistralai import ChatMistralAI
 from pydantic import BaseModel
 
@@ -87,21 +88,40 @@ def choose_best_dataset(question: str, search_results: list) -> dict | None:
         print(f"Error in choose_best_dataset: {e}")
         return search_results[0]
 
-def find_data_file_url(dataset: dict) -> str | None:
-    """Finds the best data file (CSV) from a dataset's resources."""
-    if not dataset or 'resources' not in dataset:
-        return None
-    
-    # Prefer CSV files as they are easiest to analyze
-    for resource in dataset['resources']:
-        if resource.get('format', '').lower() == 'csv':
-            return resource.get('url')
-            
-    # Fallback to the first resource if no CSV is found
-    if dataset['resources']:
-        return dataset['resources'][0].get('url')
+def analyze_data_with_ai(question: str, data_file_url: str) -> str:
+    """Downloads a data file, loads it into a pandas DataFrame, and uses a LangChain agent to answer a question."""
+    if not MISTRAL_API_KEY:
+        return "Error: MISTRAL_API_KEY is not configured."
+    try:
+        # Download the data file
+        response = requests.get(data_file_url)
+        response.raise_for_status()
         
-    return None
+        # Attempt to decode with UTF-8, then fall back to 'cp1251' for older Ukrainian files
+        try:
+            data = response.content.decode('utf-8')
+        except UnicodeDecodeError:
+            data = response.content.decode('cp1251')
+
+        # Use StringIO to handle the string data as a file and create a DataFrame
+        df = pd.read_csv(StringIO(data))
+        
+        # Initialize the AI model
+        llm = ChatMistralAI(model="mistral-large-latest", api_key=MISTRAL_API_KEY, temperature=0)
+        
+        # Create the Pandas DataFrame agent
+        agent = create_pandas_dataframe_agent(llm, df, verbose=True, allow_dangerous_code=True)
+        
+        # Ask the agent the user's question
+        # The agent will intelligently write and execute python code to answer the question
+        answer = agent.invoke(question)
+        
+        return answer['output']
+
+    except requests.exceptions.RequestException as e:
+        return f"Error: Could not download the data file from the provided URL. {e}"
+    except Exception as e:
+        return f"Error: Failed to analyze the data. The file might not be a valid CSV or there was another issue. {e}"
 
 # --- API Endpoints ---
 @app.get("/", tags=["Status"])

@@ -6,3 +6,4 @@ pandas
 pymongo
 langchain
 langchain-mistralai
+langchain_experimental

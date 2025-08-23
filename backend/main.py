@@ -133,6 +133,50 @@ async def handle_query(request: QueryRequest):
         answer = f"I found the dataset '{dataset_title}', but couldn't find a downloadable data file inside it."
         source_url = f"https://data.gov.ua/dataset/{chosen_dataset.get('id')}"
     else:
+        # Now, analyze the data to get the final answer
+        print("Analyzing data file...")
+        ai_analysis = analyze_data_with_ai(request.question, data_file_url)
+        answer = ai_analysis
+        source_url = data_file_url # Return the direct file URL
+
+    return QueryResponse(answer=answer, source_url=source_url)
+
+# --- Server Entrypoint ---
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)d to analyze the data. The file might not be a valid CSV or there was another issue. {e}"
+
+
+# --- API Endpoints ---
+@app.get("/", tags=["Status"])
+async def read_root(): return {"status": "ok"}
+
+@app.post("/api/query", tags=["AI Agent"], response_model=QueryResponse)
+async def handle_query(request: QueryRequest):
+    print(f"Received question: {request.question}")
+    keywords = get_keywords_from_question(request.question)
+    print(f"Extracted keywords: {keywords}")
+    search_results = search_data_gov_ua(keywords)
+    if isinstance(search_results, str):
+        return QueryResponse(answer=search_results)
+    if not search_results:
+        return QueryResponse(answer=f"I couldn't find any datasets for: '{keywords}'")
+
+    chosen_dataset = choose_best_dataset(request.question, search_results)
+    if not chosen_dataset:
+        return QueryResponse(answer=f"I found datasets for '{keywords}', but couldn't choose the best one.")
+    
+    dataset_title = chosen_dataset.get('title', 'No title')
+    print(f"Chosen dataset: {dataset_title}")
+
+    # NEW: Find the actual data file URL
+    data_file_url = find_data_file_url(chosen_dataset)
+    print(f"Found data file URL: {data_file_url}")
+
+    if not data_file_url:
+        answer = f"I found the dataset '{dataset_title}', but couldn't find a downloadable data file inside it."
+        source_url = f"https://data.gov.ua/dataset/{chosen_dataset.get('id')}"
+    else:
         answer = f"I believe the best dataset is '{dataset_title}'. I've found a data file and will analyze it next."
         source_url = data_file_url # Return the direct file URL
 

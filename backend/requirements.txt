@@ -7,3 +7,5 @@ pymongo
 langchain
 langchain-mistralai
 langchain_experimental
+tabulate
+openpyxl

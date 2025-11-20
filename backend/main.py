@@ -95,11 +95,18 @@ def analyze_data_with_ai(question: str, data_file_url: str) -> str:
     if not MISTRAL_API_KEY:
         return "Error: MISTRAL_API_KEY is not configured."
     try:
-        # Download the data file with a User-Agent to avoid 403 Forbidden errors
+        # Download the data file with a User-Agent and SSL verify=False to avoid 403/SSL errors
         headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Referer": "https://data.gov.ua/"
         }
-        response = requests.get(data_file_url, headers=headers)
+        # Suppress InsecureRequestWarning since we are deliberately disabling verify
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        
+        response = requests.get(data_file_url, headers=headers, verify=False)
         response.raise_for_status()
         
         # Attempt to decode with UTF-8, then fall back to 'cp1251' for older Ukrainian files

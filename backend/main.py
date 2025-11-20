@@ -63,7 +63,7 @@ def get_keywords_from_question(question: str) -> str:
 def search_data_gov_ua(keywords: str) -> list | str:
     if keywords.startswith("Error"): return keywords
     try:
-        response = requests.get(DATA_GOV_UA_API_URL, params={'q': keywords, 'rows': 5})
+        response = requests.get(DATA_GOV_UA_API_URL, params={'q': keywords, 'rows': 20})
         response.raise_for_status()
         return response.json().get("result", {}).get("results", [])
     except requests.exceptions.RequestException as e:
@@ -150,19 +150,30 @@ async def handle_query(request: QueryRequest):
     if not search_results:
         return QueryResponse(answer=f"I couldn't find any datasets for: '{keywords}'")
 
-    chosen_dataset = choose_best_dataset(request.question, search_results)
+    # NEW: Filter datasets to only include those with valid data files (CSV, XLSX, XLS)
+    valid_datasets = []
+    for dataset in search_results:
+        if find_data_file_url(dataset):
+            valid_datasets.append(dataset)
+    
+    print(f"Found {len(search_results)} total datasets, {len(valid_datasets)} with valid data files.")
+
+    # If we have valid datasets, use them. Otherwise, fall back to all results (better than nothing)
+    datasets_to_choose_from = valid_datasets if valid_datasets else search_results
+
+    chosen_dataset = choose_best_dataset(request.question, datasets_to_choose_from)
     if not chosen_dataset:
         return QueryResponse(answer=f"I found datasets for '{keywords}', but couldn't choose the best one.")
     
     dataset_title = chosen_dataset.get('title', 'No title')
     print(f"Chosen dataset: {dataset_title}")
 
-    # NEW: Find the actual data file URL
+    # Find the actual data file URL
     data_file_url = find_data_file_url(chosen_dataset)
     print(f"Found data file URL: {data_file_url}")
 
     if not data_file_url:
-        answer = f"I found the dataset '{dataset_title}', but couldn't find a downloadable data file inside it."
+        answer = f"I found the dataset '{dataset_title}', but couldn't find a downloadable data file inside it (CSV/Excel)."
         source_url = f"https://data.gov.ua/dataset/{chosen_dataset.get('id')}"
     else:
         # Now, analyze the data to get the final answer

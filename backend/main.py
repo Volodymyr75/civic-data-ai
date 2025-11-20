@@ -95,8 +95,11 @@ def analyze_data_with_ai(question: str, data_file_url: str) -> str:
     if not MISTRAL_API_KEY:
         return "Error: MISTRAL_API_KEY is not configured."
     try:
-        # Download the data file
-        response = requests.get(data_file_url)
+        # Download the data file with a User-Agent to avoid 403 Forbidden errors
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        response = requests.get(data_file_url, headers=headers)
         response.raise_for_status()
         
         # Attempt to decode with UTF-8, then fall back to 'cp1251' for older Ukrainian files

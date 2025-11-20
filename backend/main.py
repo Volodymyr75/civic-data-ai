@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
-from io import StringIO
+from io import StringIO, BytesIO
 from langchain_experimental.agents import create_pandas_dataframe_agent
 from langchain_mistralai import ChatMistralAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -109,14 +109,17 @@ def analyze_data_with_ai(question: str, data_file_url: str) -> str:
         response = requests.get(data_file_url, headers=headers, verify=False)
         response.raise_for_status()
         
-        # Attempt to decode with UTF-8, then fall back to 'cp1251' for older Ukrainian files
-        try:
-            data = response.content.decode('utf-8')
-        except UnicodeDecodeError:
-            data = response.content.decode('cp1251')
-
-        # Use StringIO to handle the string data as a file and create a DataFrame
-        df = pd.read_csv(StringIO(data))
+        # Determine file type and load accordingly
+        if data_file_url.lower().endswith(('.xlsx', '.xls')):
+            df = pd.read_excel(BytesIO(response.content))
+        else:
+            # Attempt to decode with UTF-8, then fall back to 'cp1251' for older Ukrainian files
+            try:
+                data = response.content.decode('utf-8')
+            except UnicodeDecodeError:
+                data = response.content.decode('cp1251')
+            # Use StringIO to handle the string data as a file
+            df = pd.read_csv(StringIO(data))
         
         # Initialize the AI model
         llm = ChatMistralAI(model="mistral-large-latest", api_key=MISTRAL_API_KEY, temperature=0)
@@ -131,9 +134,9 @@ def analyze_data_with_ai(question: str, data_file_url: str) -> str:
         return answer['output']
 
     except requests.exceptions.RequestException as e:
-        return f"Error: Could not download the data file from the provided URL. {e}"
+        raise Exception(f"Could not download the data file: {e}") # Re-raise to be caught by retry loop
     except Exception as e:
-        return f"Error: Failed to analyze the data. The file might not be a valid CSV or there was another issue. {e}"
+        raise Exception(f"Failed to analyze the data: {e}") # Re-raise to be caught by retry loop
 
 # --- API Endpoints ---
 @app.get("/", tags=["Status"])
@@ -161,28 +164,46 @@ async def handle_query(request: QueryRequest):
     # If we have valid datasets, use them. Otherwise, fall back to all results (better than nothing)
     datasets_to_choose_from = valid_datasets if valid_datasets else search_results
 
-    chosen_dataset = choose_best_dataset(request.question, datasets_to_choose_from)
-    if not chosen_dataset:
-        return QueryResponse(answer=f"I found datasets for '{keywords}', but couldn't choose the best one.")
+    # RETRY LOOP: Try up to 3 datasets
+    max_retries = 3
+    attempts = 0
     
-    dataset_title = chosen_dataset.get('title', 'No title')
-    print(f"Chosen dataset: {dataset_title}")
+    while attempts < max_retries and datasets_to_choose_from:
+        attempts += 1
+        print(f"Attempt {attempts}/{max_retries} to choose and analyze a dataset...")
+        
+        chosen_dataset = choose_best_dataset(request.question, datasets_to_choose_from)
+        if not chosen_dataset:
+             return QueryResponse(answer=f"I found datasets for '{keywords}', but couldn't choose the best one.")
+        
+        dataset_title = chosen_dataset.get('title', 'No title')
+        print(f"Chosen dataset: {dataset_title}")
 
-    # Find the actual data file URL
-    data_file_url = find_data_file_url(chosen_dataset)
-    print(f"Found data file URL: {data_file_url}")
+        # Find the actual data file URL
+        data_file_url = find_data_file_url(chosen_dataset)
+        print(f"Found data file URL: {data_file_url}")
 
-    if not data_file_url:
-        answer = f"I found the dataset '{dataset_title}', but couldn't find a downloadable data file inside it (CSV/Excel)."
-        source_url = f"https://data.gov.ua/dataset/{chosen_dataset.get('id')}"
-    else:
-        # Now, analyze the data to get the final answer
-        print("Analyzing data file...")
-        ai_analysis = analyze_data_with_ai(request.question, data_file_url)
-        answer = ai_analysis
-        source_url = data_file_url # Return the direct file URL
+        if not data_file_url:
+            # This shouldn't happen often if valid_datasets logic is working, but just in case
+            print("No valid file URL found in chosen dataset. Skipping.")
+            datasets_to_choose_from.remove(chosen_dataset)
+            continue
 
-    return QueryResponse(answer=answer, source_url=source_url)
+        try:
+            # Now, analyze the data to get the final answer
+            print("Analyzing data file...")
+            ai_analysis = analyze_data_with_ai(request.question, data_file_url)
+            return QueryResponse(answer=ai_analysis, source_url=data_file_url)
+        except Exception as e:
+            print(f"Error analyzing dataset '{dataset_title}': {e}")
+            # Remove the failed dataset from the list and try again
+            if chosen_dataset in datasets_to_choose_from:
+                datasets_to_choose_from.remove(chosen_dataset)
+            
+            if not datasets_to_choose_from:
+                 return QueryResponse(answer=f"I tried to analyze several datasets for '{keywords}', but encountered errors (e.g., access denied or invalid format). Last error: {e}")
+
+    return QueryResponse(answer=f"I couldn't successfully analyze any of the found datasets for '{keywords}'.")
 
 # --- Server Entrypoint ---
 if __name__ == "__main__":
@@ -203,8 +224,6 @@ def find_data_file_url(dataset: dict) -> str | None:
             if resource.get('format', '').upper() == fmt:
                 return resource.get('url')
     
-    # Fallback: return the first resource URL if no specific format matches
-    if resources:
-        return resources[0].get('url')
-    
+    # STRICT MODE: Do NOT fallback to just any file. 
+    # If we can't find a CSV or Excel, we can't analyze it reliably.
     return None

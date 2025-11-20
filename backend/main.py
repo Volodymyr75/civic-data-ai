@@ -49,7 +49,7 @@ class QueryResponse(BaseModel):
 def get_keywords_from_question(question: str) -> str:
     if not MISTRAL_API_KEY: return "Error: MISTRAL_API_KEY is not configured."
     try:
-        llm = ChatMistralAI(model="mistral-large-latest", api_key=MISTRAL_API_KEY)
+        llm = ChatMistralAI(model="open-mixtral-8x7b", api_key=MISTRAL_API_KEY)
         prompt = ChatPromptTemplate.from_messages([
             ("system", "You are an expert at extracting the 2-4 most essential Ukrainian search keywords from a user's question. Your goal is to pull out only the core terms needed to search a government data portal. Do not add extra words. Respond with only the keywords, in Ukrainian, separated by spaces. For example, if the user asks 'Скільки шкіл у місті Львів?', you should respond 'школи Львів'."),
             ("user", "{question}"),
@@ -77,7 +77,7 @@ def choose_best_dataset(question: str, search_results: list) -> dict | None:
         prompt_text += f"\n{i+1}. Title: {dataset.get('title', 'No title')}\n   Description: {dataset.get('notes', 'No description')[:200]}...\n"
     prompt_text += "\nWhich dataset is most relevant? Respond with only the number."
     try:
-        llm = ChatMistralAI(model="mistral-large-latest", api_key=MISTRAL_API_KEY)
+        llm = ChatMistralAI(model="open-mixtral-8x7b", api_key=MISTRAL_API_KEY)
         chain = ChatPromptTemplate.from_messages([("user", "{prompt}")]) | llm | StrOutputParser()
         response = chain.invoke({"prompt": prompt_text})
         match = re.search(r'\d+', response)
@@ -122,10 +122,10 @@ def analyze_data_with_ai(question: str, data_file_url: str) -> str:
             df = pd.read_csv(StringIO(data))
         
         # Initialize the AI model
-        llm = ChatMistralAI(model="mistral-large-latest", api_key=MISTRAL_API_KEY, temperature=0)
+        llm = ChatMistralAI(model="open-mixtral-8x7b", api_key=MISTRAL_API_KEY, temperature=0)
         
         # Create the Pandas DataFrame agent
-        agent = create_pandas_dataframe_agent(llm, df, verbose=True, allow_dangerous_code=True)
+        agent = create_pandas_dataframe_agent(llm, df, verbose=True, allow_dangerous_code=True, handle_parsing_errors=True)
         
         # Ask the agent the user's question
         # The agent will intelligently write and execute python code to answer the question

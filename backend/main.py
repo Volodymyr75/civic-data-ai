@@ -125,7 +125,13 @@ def analyze_data_with_ai(question: str, data_file_url: str) -> str:
         llm = ChatMistralAI(model="open-mixtral-8x7b", api_key=MISTRAL_API_KEY, temperature=0)
         
         # Create the Pandas DataFrame agent
-        agent = create_pandas_dataframe_agent(llm, df, verbose=True, allow_dangerous_code=True, handle_parsing_errors=True)
+        agent = create_pandas_dataframe_agent(
+            llm, 
+            df, 
+            verbose=True, 
+            allow_dangerous_code=True, 
+            agent_executor_kwargs={"handle_parsing_errors": True}
+        )
         
         # Ask the agent the user's question
         # The agent will intelligently write and execute python code to answer the question

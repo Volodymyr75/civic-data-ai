@@ -12,6 +12,8 @@ from langchain_mistralai import ChatMistralAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from pydantic import BaseModel
+import time
+from curl_cffi import requests as curl_requests
 
 # --- Environment Variables ---
 load_dotenv()
@@ -48,17 +50,23 @@ class QueryResponse(BaseModel):
 # --- AI & Data Functions ---
 def get_keywords_from_question(question: str) -> str:
     if not MISTRAL_API_KEY: return "Error: MISTRAL_API_KEY is not configured."
-    try:
-        llm = ChatMistralAI(model="open-mixtral-8x7b", api_key=MISTRAL_API_KEY)
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", "You are an expert at extracting the 2-4 most essential Ukrainian search keywords from a user's question. Your goal is to pull out only the core terms needed to search a government data portal. Do not add extra words. Respond with only the keywords, in Ukrainian, separated by spaces. For example, if the user asks 'Скільки шкіл у місті Львів?', you should respond 'школи Львів'."),
-            ("user", "{question}"),
-        ])
-        chain = prompt | llm | StrOutputParser()
-        return chain.invoke({"question": question})
-    except Exception as e:
-        print(f"Error in get_keywords_from_question: {e}")
-        return "Error: Could not connect to AI model for keyword extraction."
+    
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            llm = ChatMistralAI(model="open-mixtral-8x7b", api_key=MISTRAL_API_KEY)
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", "You are an expert at extracting the 2-4 most essential Ukrainian search keywords from a user's question. Your goal is to pull out only the core terms needed to search a government data portal. Do not add extra words. Respond with only the keywords, in Ukrainian, separated by spaces. For example, if the user asks 'Скільки шкіл у місті Львів?', you should respond 'школи Львів'."),
+                ("user", "{question}"),
+            ])
+            chain = prompt | llm | StrOutputParser()
+            return chain.invoke({"question": question})
+        except Exception as e:
+            print(f"Error in get_keywords_from_question (Attempt {attempt+1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2)  # Wait 2 seconds before retrying
+            else:
+                return "Error: Could not connect to AI model for keyword extraction."
 
 def search_data_gov_ua(keywords: str) -> list | str:
     if keywords.startswith("Error"): return keywords
@@ -95,18 +103,9 @@ def analyze_data_with_ai(question: str, data_file_url: str) -> str:
     if not MISTRAL_API_KEY:
         return "Error: MISTRAL_API_KEY is not configured."
     try:
-        # Download the data file with a User-Agent and SSL verify=False to avoid 403/SSL errors
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-            "Accept-Language": "uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Referer": "https://data.gov.ua/"
-        }
-        # Suppress InsecureRequestWarning since we are deliberately disabling verify
-        import urllib3
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        
-        response = requests.get(data_file_url, headers=headers, verify=False)
+        # Download the data file with curl_cffi to impersonate a real browser and avoid 403/Connection Refused
+        # We use impersonate="chrome110" to mimic a recent Chrome browser
+        response = curl_requests.get(data_file_url, impersonate="chrome110", verify=False, timeout=30)
         response.raise_for_status()
         
         # Determine file type and load accordingly
@@ -171,7 +170,7 @@ async def handle_query(request: QueryRequest):
     datasets_to_choose_from = valid_datasets if valid_datasets else search_results
 
     # RETRY LOOP: Try up to 3 datasets
-    max_retries = 3
+    max_retries = 10
     attempts = 0
     
     while attempts < max_retries and datasets_to_choose_from:

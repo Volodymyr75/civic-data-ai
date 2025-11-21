@@ -9,3 +9,4 @@ langchain-mistralai
 langchain_experimental
 tabulate
 openpyxl
+curl_cffi
